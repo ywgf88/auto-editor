@@ -6,32 +6,35 @@ labels: bug
 
 ---
 
-(Make sure you're using the latest version)
+**What version are you running?** 
+(Make sure you've tried the latest version)
 
 **What went wrong**
 
+```
+Paste the command you've tried. 
+```
+
+**Describe what went wrong**
 
 ```
-Paste the terminal output here
+Paste the terminal output here.
 ```
+
+**What conditions must be met for it to be wrong** 
 
 **Does the example video work? (if applicable)**
 
-
-**What does the program output when `--debug` or `--show_ffmpeg_debug` is appended to your command/use case**
-
-```
-output here:
-```
-
 **What's your platform? (if applicable)**
+Run: `auto-editor --debug`
 
 ```
-output here, run: `auto-editor --debug` if possible.
+Paste output here.
 ```
 
-**What's your input? (if applicable)**
+**What properties your input file(s)? (if applicable)**
+You can use  `aeinfo ./path/to/video.mp4` or `ffmpeg -hide_banner -i ./path/to/video.mp4` to get standard info.
 
 ```
-output here, run: `auto-editor info path/to/video
+Paste output here.
 ```

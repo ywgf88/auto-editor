@@ -6,90 +6,20 @@ import os
 import sys
 import tempfile
 
-def error(message):
-    print('Error! {}'.format(message), file=sys.stderr)
-    sys.exit(1)
+# Included Libraries
+import auto_editor
+import auto_editor.vanparse as vanparse
+import auto_editor.utils.func as usefulfunctions
 
-def file_type(path):
-    if(not os.path.isfile(path)):
-        error('Auto-Editor could not find the file: {}'.format(path))
-    return path
-
-def float_type(num):
-    if(num.endswith('%')):
-        return float(num[:-1]) / 100
-    return float(num)
-
-def sample_rate_type(num):
-    if(num.endswith(' Hz')):
-        return int(num[:-3])
-    if(num.endswith(' kHz')):
-        return int(float(num[:-4]) * 1000)
-    if(num.endswith('kHz')):
-        return int(float(num[:-3]) * 1000)
-    if(num.endswith('Hz')):
-        return int(num[:-2])
-    return int(num)
-
-def frame_type(num):
-    if(num.endswith('sec')):
-        return num[:-3]
-    if(num.endswith('secs')):
-        return num[:-4]
-    return int(num)
-
-def comma_type(inp, min_args=1, max_args=None, name=''):
-    from auto_editor.usefulFunctions import cleanList
-    inp = cleanList(inp.split(','), '\r\n\t')
-    if(min_args > len(inp)):
-        error('Too few comma arguments for {}.'.format(name))
-    if(max_args is not None and len(inp) > max_args):
-        error('Too many comma arguments for {}.'.format(name))
-    return inp
-
-def zoom_type(inp):
-    return comma_type(inp, 3, 8, 'zoom_type')
-
-def rect_type(inp):
-    return comma_type(inp, 6, 8, 'rect_type')
-
-def range_type(inp):
-    return comma_type(inp, 2, 2, 'range_type')
-
-def speed_range_type(inp):
-    return comma_type(inp, 3, 3, 'speed_range_type')
-
-
-def appendFileName(file_name, val):
-    dotIndex = file_name.rfind('.')
-    end = val + file_name[dotIndex:]
-    return file_name[:dotIndex] + end
-
-# Pad so that the av method works.
-def padChunk(item, totalFrames):
-    start = None
-    end = None
-    if(item[0] != 0):
-        start = [0, item[0], 2]
-    if(item[1] != totalFrames -1):
-        end = [item[1], totalFrames -1, 2]
-
-    if(start is None):
-        return [item] + [end]
-    if(end is None):
-        return [start] + [item]
-    return [start] + [item] + [end]
+from auto_editor.utils.progressbar import ProgressBar
+from auto_editor.utils.func import set_output_name
+from auto_editor.utils.log import Log, Timer
+from auto_editor.ffwrapper import FFmpeg
+from auto_editor.edit import edit_media
 
 def main_options(parser):
-    parser.add_argument('urlOps', nargs=0, action='grouping')
-    parser.add_argument('--format', type=str, group='urlOps',
-        default='bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4',
-        help='the format youtube-dl uses to when downloading a url.')
-    parser.add_argument('--output_dir', type=str, group='urlOps',
-        default=None,
-        help='the directory where the downloaded file is placed.')
-    parser.add_argument('--check_certificate', action='store_true', group='urlOps',
-        help='check the website certificate before downloading.')
+    from auto_editor.utils.types import (file_type, float_type, sample_rate_type,
+        frame_type, range_type, speed_range_type, block_type)
 
     parser.add_argument('progressOps', nargs=0, action='grouping')
     parser.add_argument('--machine_readable_progress', action='store_true',
@@ -103,42 +33,130 @@ def main_options(parser):
     parser.add_argument('--force_fps_to', type=float, group='metadataOps',
         help='manually set the fps value for the input video if detection fails.')
 
+    parser.add_argument('motionOps', nargs=0, action='grouping')
+    parser.add_argument('--dilates', type=int, default=2, range='0 to 5',
+        group='motionOps',
+        help='set how many times a frame is dilated before being compared.')
+    parser.add_argument('--width', type=int, default=400, range='1 to Infinity',
+        group='motionOps',
+        help="scale the frame to this width before being compared.")
+    parser.add_argument('--blur', type=int, default=21, range='0 to Infinity',
+        group='motionOps',
+        help='set the strength of the blur applied to a frame before being compared.')
+
+    parser.add_argument('urlOps', nargs=0, action='grouping')
+    parser.add_argument('--output_dir', type=str, group='urlOps',
+        default=None,
+        help='the directory where the downloaded file is placed.')
+    parser.add_argument('--limit_rate', '-rate', default='3m',
+        help='maximum download rate in bytes per second (50k, 4.2m)')
+    parser.add_argument('--id', type=str, default=None, group='urlOps',
+        help='manually set the YouTube ID the video belongs to.')
+    parser.add_argument('--block', type=block_type, group='urlOps',
+        help='mark all sponsors sections as silent.',
+        extra='Only for YouTube urls. This uses the SponsorBlock api.\n'
+            'Choices can include: sponsor intro outro selfpromo interaction music_offtopic')
+    parser.add_argument('--download_archive', type=file_type, default=None, group='urlOps',
+        help='Download only videos not listed in the archive file. Record the IDs of'
+             ' all downloaded videos in it')
+    parser.add_argument('--cookies', type=file_type, default=None, group='urlOps',
+        help='The file to read cookies from and dump the cookie jar in.')
+    parser.add_argument('--check_certificate', action='store_true', group='urlOps',
+        help='check the website certificate before downloading.')
+
     parser.add_argument('exportMediaOps', nargs=0, action='grouping')
-    parser.add_argument('--video_bitrate', '-vb', default='unset', group='exportMediaOps',
+    parser.add_argument('--video_bitrate', '-b:v', default='5m', group='exportMediaOps',
         help='set the number of bits per second for video.')
-    parser.add_argument('--audio_bitrate', '-ab', default='unset', group='exportMediaOps',
+    parser.add_argument('--audio_bitrate', '-b:a', default='unset', group='exportMediaOps',
         help='set the number of bits per second for audio.')
-    # parser.add_argument('--video_quality', '-')
-    parser.add_argument('--sample_rate', '-r', type=sample_rate_type,
+    parser.add_argument('--sample_rate', '-ar', type=sample_rate_type,
         group='exportMediaOps',
         help='set the sample rate of the input and output videos.')
-    parser.add_argument('--video_codec', '-vcodec', default='uncompressed',
+    parser.add_argument('--video_codec', '-vcodec', '-c:v', default='auto',
         group='exportMediaOps',
         help='set the video codec for the output media file.')
-    parser.add_argument('--audio_codec', '-acodec', group='exportMediaOps',
+    parser.add_argument('--audio_codec', '-acodec', '-c:a', group='exportMediaOps',
         help='set the audio codec for the output media file.')
-    parser.add_argument('--preset', '-p', default='unset', group='exportMediaOps',
+    parser.add_argument('--preset', '-preset', default='unset', group='exportMediaOps',
         choices=['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium',
             'slow', 'slower', 'veryslow', 'unset'],
         help='set the preset for ffmpeg to help save file size or increase quality.')
-    parser.add_argument('--tune', '-t', default='unset', group='exportMediaOps',
+    parser.add_argument('--tune', '-tune', default='unset', group='exportMediaOps',
         choices=['film', 'animation', 'grain', 'stillimage', 'fastdecode',
             'zerolatency', 'none', 'unset'],
         help='set the tune for ffmpeg to compress video better in certain circumstances.')
     parser.add_argument('--constant_rate_factor', '-crf', default='unset',
         group='exportMediaOps', range='0 to 51',
         help='set the quality for video using the crf method.')
+    parser.add_argument('--video_quality_scale', '-qscale:v', '-q:v', default='unset',
+        group='exportMediaOps', range='1 to 31',
+        help='set a value to the ffmpeg option -qscale:v')
+    parser.add_argument('--has_vfr', default='unset', group='exportMediaOps',
+        choices=['unset', 'yes', 'no'],
+        help='skip variable frame rate scan, saving time for big video files.')
 
-    parser.add_argument('motionOps', nargs=0, action='grouping')
-    parser.add_argument('--dilates', '-d', type=int, default=2, range='0 to 5',
-        group='motionOps',
-        help='set how many times a frame is dilated before being compared.')
-    parser.add_argument('--width', '-w', type=int, default=400, range='1 to Infinity',
-        group='motionOps',
-        help="scale the frame to this width before being compared.")
-    parser.add_argument('--blur', '-b', type=int, default=21, range='0 to Infinity',
-        group='motionOps',
-        help='set the strength of the blur applied to a frame before being compared.')
+    parser.add_argument('effectOps', nargs=0, action='grouping')
+    parser.add_argument('--zoom', nargs='*', type=dict, group='effectOps',
+        help='set when and how a zoom will occur.',
+        keywords=[
+            {'start': ''}, {'end': ''}, {'zoom': ''}, {'end_zoom': '{zoom}'},
+            {'x': 'centerX'}, {'y': 'centerY'}, {'interpolate': 'linear'},
+        ])
+    parser.add_argument('--rectangle', nargs='*', type=dict, group='effectOps',
+        keywords=[
+            {'start': ''}, {'end': ''}, {'x1': ''}, {'y1': ''},
+            {'x2': ''}, {'y2': ''}, {'fill': '#000'}, {'width': 0}, {'outline': 'blue'}
+        ],
+        help='overlay a rectangle shape on the video.')
+    parser.add_argument('--circle', nargs='*', type=dict, group='effectOps',
+        keywords=[
+            {'start': ''}, {'end': ''}, {'x1': ''}, {'y1': ''},
+            {'x2': ''}, {'y2': ''}, {'fill': '#000'}, {'width': 0}, {'outline': 'blue'}
+        ],
+        help='overlay a circle shape on the video.',
+        extra='\n\nThe x and y coordinates specify a bounding box where the circle is '\
+            'drawn.')
+
+    parser.add_argument('--background', type=str, default='#000',
+        help='set the color of the background that is visible when the video is moved.')
+    parser.add_argument('--render', default='auto', hidden=True,
+        help="defunct option. doesn't do anything.")
+    parser.add_argument('--scale', type=float_type, default=1,
+        help='scale the output media file by a certain factor.')
+    parser.add_argument('--combine_files', action='store_true',
+        help='combine all input files into one before editing.')
+
+    parser.add_argument('--mark_as_loud', type=range_type, nargs='*',
+        help='the range that will be marked as "loud".')
+    parser.add_argument('--mark_as_silent', type=range_type, nargs='*',
+        help='the range that will be marked as "silent".')
+    parser.add_argument('--cut_out', type=range_type, nargs='*',
+        help='the range of media that will be removed completely, regardless of the '
+            'value of silent speed.')
+    parser.add_argument('--add_in', type=range_type, nargs='*',
+        help='the range of media that will be added in, opposite of --cut_out')
+    parser.add_argument('--set_speed_for_range', type=speed_range_type, nargs='*',
+        help='set an arbitrary speed for a given range.',
+        extra='The arguments are: speed,start,end')
+
+    parser.add_argument('--motion_threshold', type=float_type, default=0.02,
+        range='0 to 1',
+        help='how much motion is required to be considered "moving"')
+    parser.add_argument('--edit_based_on', '--edit', default='audio',
+        choices=['audio', 'motion', 'none', 'all', 'not_audio', 'not_motion',
+            'audio_or_motion', 'audio_and_motion', 'audio_xor_motion',
+            'audio_and_not_motion', 'not_audio_and_motion', 'not_audio_and_not_motion'],
+        help='decide which method to use when making edits.')
+
+    parser.add_argument('--cut_by_this_audio', '-ca', type=file_type,
+        help="base cuts by this audio file instead of the video's audio.")
+    parser.add_argument('--cut_by_this_track', '-ct', type=int, default=0,
+        range='0 to the number of audio tracks minus one',
+        help='base cuts by a different audio track in the video.')
+    parser.add_argument('--cut_by_all_tracks', '-cat', action='store_true',
+        help='combine all audio tracks into one before basing cuts.')
+    parser.add_argument('--keep_tracks_seperate', action='store_true',
+        help="don't combine audio tracks when exporting.")
 
     parser.add_argument('--export_as_audio', '-exa', action='store_true',
         help='export as a WAV audio file.')
@@ -156,68 +174,27 @@ def main_options(parser):
     parser.add_argument('--export_as_clip_sequence', '-excs', action='store_true',
         help='export as multiple numbered media files.')
 
-    parser.add_argument('--render', default='auto', choices=['av', 'opencv', 'auto'],
-        help='choice which method to render video.')
-    parser.add_argument('--scale', type=float_type, default=1,
-        help='scale the output media file by a certian factor.')
-
-    parser.add_argument('--zoom', type=zoom_type, nargs='*',
-        help='set when and how a zoom will occur.',
-        extra='The arguments are: start,end,start_zoom,end_zoom,x,y,inter,hold' \
-            '\nThere must be at least 3 comma args. x and y default to centerX and centerY' \
-            '\nThe default interpolation is linear.')
-    parser.add_argument('--rectangle', type=rect_type, nargs='*',
-        help='overlay a rectangle shape on the video.',
-        extra='The arguments are: start,end,x1,y1,x2,y2,color,thickness' \
-            '\nThere must be at least 6 comma args. The rectangle is solid if' \
-            ' thickness is not defined.\n The default color is #000.')
-
-    parser.add_argument('--background', type=str, default='#000',
-        help='set the color of the background that is visible when the video is moved.')
-
-    parser.add_argument('--mark_as_loud', type=range_type, nargs='*',
-        help='the range that will be marked as "loud".')
-    parser.add_argument('--mark_as_silent', type=range_type, nargs='*',
-        help='the range that will be marked as "silent".')
-    parser.add_argument('--cut_out', type=range_type, nargs='*',
-        help='the range of media that will be removed completely, regardless of the '\
-            'value of silent speed.')
-    parser.add_argument('--set_speed_for_range', type=speed_range_type, nargs='*',
-        help='set an arbitrary speed for a given range.',
-        extra='The arguments are: speed,start,end')
-
-    parser.add_argument('--motion_threshold', type=float_type, default=0.02,
-        range='0 to 1',
-        help='how much motion is required to be considered "moving"')
-    parser.add_argument('--edit_based_on', default='audio',
-        choices=['audio', 'motion', 'not_audio', 'not_motion', 'audio_or_motion',
-            'audio_and_motion', 'audio_xor_motion', 'audio_and_not_motion',
-            'not_audio_and_motion', 'not_audio_and_not_motion'],
-        help='decide which method to use when making edits.')
-
-    parser.add_argument('--cut_by_this_audio', '-ca', type=file_type,
-        help="base cuts by this audio file instead of the video's audio.")
-    parser.add_argument('--cut_by_this_track', '-ct', type=int, default=0,
-        range='0 to the number of audio tracks minus one',
-        help='base cuts by a different audio track in the video.')
-    parser.add_argument('--cut_by_all_tracks', '-cat', action='store_true',
-        help='combine all audio tracks into one before basing cuts.')
-    parser.add_argument('--keep_tracks_seperate', action='store_true',
-        help="don't combine audio tracks when exporting.")
-
+    parser.add_argument('--temp_dir', default=None,
+        help='set where the temporary directory is located.',
+        extra='If not set, tempdir will be set with Python\'s tempfile module\n'
+            'For Windows users, this file will be in the C drive.\n'
+            'The temp file can get quite big if you\'re generating a huge video, so '
+            'make sure your location has enough space.')
+    parser.add_argument('--ffmpeg_location', default=None,
+        help='set a custom path to the ffmpeg location.',
+        extra='This takes precedence over --my_ffmpeg.')
     parser.add_argument('--my_ffmpeg', action='store_true',
-        help='use your ffmpeg and other binaries instead of the ones packaged.')
+        help='use the ffmpeg on your PATH instead of the one packaged.',
+        extra='this is equivalent to --ffmpeg_location ffmpeg.')
     parser.add_argument('--version', action='store_true',
         help='show which auto-editor you have.')
-    parser.add_argument('--debug', '--verbose', '-d', action='store_true',
+    parser.add_argument('--debug', action='store_true',
         help='show debugging messages and values.')
     parser.add_argument('--show_ffmpeg_debug', action='store_true',
         help='show ffmpeg progress and output.')
     parser.add_argument('--quiet', '-q', action='store_true',
         help='display less output.')
 
-    parser.add_argument('--combine_files', action='store_true',
-        help='combine all input files into one before editing.')
     parser.add_argument('--preview', action='store_true',
         help='show stats on how the input will be cut.')
     parser.add_argument('--no_open', action='store_true',
@@ -241,9 +218,9 @@ def main_options(parser):
         default=1.00,
         range='Any number. Values <= 0 or >= 99999 will be cut out.',
         help='set the speed that "loud" sections should be played at.')
-    parser.add_argument('--frame_margin', '-m', type=frame_type, default=6,
+    parser.add_argument('--frame_margin', '--margin', '-m', type=frame_type, default=6,
         range='0 to Infinity',
-        help='set how many "silent" frames of on either side of "loud" sections '\
+        help='set how many "silent" frames of on either side of "loud" sections '
             'be included.')
 
     parser.add_argument('--help', '-h', action='store_true',
@@ -254,44 +231,21 @@ def main_options(parser):
 
 
 def main():
-    import auto_editor
-    import auto_editor.vanparse as vanparse
-    import auto_editor.usefulFunctions as usefulFunctions
-
-    from auto_editor.usefulFunctions import fNone
-    from auto_editor.utils.log import Log, Timer
-    from auto_editor.ffwrapper import FFmpeg
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-
     parser = vanparse.ArgumentParser('Auto-Editor', auto_editor.version,
-        description='\nAuto-Editor is an automatic video/audio creator and editor. '\
-            'By default, it will detect silence and create a new video with those '\
-            'sections cut out. By changing some of the options, you can export to a '\
-            'traditional editor like Premiere Pro and adjust the edits there, adjust '\
-            'the pacing of the cuts, and change the method of editing like using audio '\
-            'loudness and video motion to judge making cuts.\nRun:\n    auto-editor '\
+        description='\nAuto-Editor is an automatic video/audio creator and editor. '
+            'By default, it will detect silence and create a new video with those '
+            'sections cut out. By changing some of the options, you can export to a '
+            'traditional editor like Premiere Pro and adjust the edits there, adjust '
+            'the pacing of the cuts, and change the method of editing like using audio '
+            'loudness and video motion to judge making cuts.\nRun:\n    auto-editor '
             '--help\n\nTo get the list of options.\n')
 
-    subcommands = ['create', 'test', 'info', 'levels']
+    subcommands = ['create', 'test', 'info', 'levels', 'grep', 'subdump', 'desc']
 
     if(len(sys.argv) > 1 and sys.argv[1] in subcommands):
-        if(sys.argv[1] == 'create'):
-            from auto_editor.subcommands.create import create
-            create(sys.argv[2:])
-
-        if(sys.argv[1] == 'test'):
-            from auto_editor.subcommands.test import test
-            test()
-
-        if(sys.argv[1] == 'info'):
-            from auto_editor.subcommands.info import info
-            info(sys.argv[2:])
-
-        if(sys.argv[1] == 'levels'):
-            from auto_editor.subcommands.levels import levels
-            levels(sys.argv[2:])
-
+        obj = __import__('auto_editor.subcommands.{}'.format(sys.argv[1]),
+            fromlist=['subcommands'])
+        obj.main(sys.argv[2:])
         sys.exit()
     else:
         parser = main_options(parser)
@@ -305,45 +259,52 @@ def main():
 
     is64bit = '64-bit' if sys.maxsize > 2**32 else '32-bit'
 
+    ffmpeg = FFmpeg(args.ffmpeg_location, args.my_ffmpeg, args.show_ffmpeg_debug)
+
     if(args.debug and args.input == []):
         import platform
-        log = Log()
-        ffmpeg = FFmpeg(dir_path, args.my_ffmpeg, args.show_ffmpeg_debug, log)
+
+        dirpath = os.path.dirname(os.path.realpath(__file__))
 
         print('Python Version: {} {}'.format(platform.python_version(), is64bit))
-        print('Platform: {} {}'.format(platform.system(), platform.release()))
-        print('Config File path: {}'.format(os.path.join(dir_path, 'config.txt')))
-        print('FFmpeg path: {}'.format(ffmpeg.getPath()))
-        print('FFmpeg version: {}'.format(ffmpeg.getVersion()))
+        print('Platform: {} {} {}'.format(platform.system(), platform.release(), platform.machine().lower()))
+        print('Config File path: {}'.format(os.path.join(dirpath, 'config.txt')))
+        print('FFmpeg path: {}'.format(ffmpeg.path))
+        print('FFmpeg version: {}'.format(ffmpeg.version))
         print('Auto-Editor version {}'.format(auto_editor.version))
         sys.exit()
 
     if(is64bit == '32-bit'):
-        log.warning('You have the 32-bit version of Python, which may lead to '\
+        Log().warning('You have the 32-bit version of Python, which may lead to '
             'memory crashes.')
 
     if(args.version):
         print('Auto-Editor version {}'.format(auto_editor.version))
         sys.exit()
 
-    TEMP = tempfile.mkdtemp()
-    log = Log(args.debug, args.quiet, temp=TEMP)
-    ffmpeg = FFmpeg(dir_path, args.my_ffmpeg, args.show_ffmpeg_debug, log)
+    if(args.temp_dir is None):
+        TEMP = tempfile.mkdtemp()
+    else:
+        TEMP = args.temp_dir
+        if(os.path.isfile(TEMP)):
+            Log().error('Temp directory cannot be an already existing file.')
+        if(os.path.isdir(TEMP)):
+            if(len(os.listdir(TEMP)) != 0):
+                Log().error('Temp directory should be empty!')
+        else:
+            os.mkdir(TEMP)
 
+    log = Log(args.debug, args.quiet, temp=TEMP)
     log.debug('Temp Directory: {}'.format(TEMP))
 
     if(args.input == []):
-        log.error('You need to give auto-editor an input file or folder so it can ' \
+        log.error('You need to give auto-editor an input file or folder so it can '
             'do the work for you.')
 
     if([args.export_to_premiere, args.export_to_resolve,
         args.export_to_final_cut_pro, args.export_as_audio,
-        args.export_as_clip_sequence].count(True) > 1):
+        args.export_to_shotcut, args.export_as_clip_sequence].count(True) > 1):
         log.error('You must choose only one export option.')
-
-    if(making_data_file and (args.video_codec != 'uncompressed' or
-        args.constant_rate_factor != 'unset' or args.tune != 'unset')):
-        log.warning('exportMediaOps options are not used when making a data file.')
 
     if(isinstance(args.frame_margin, str)):
         try:
@@ -361,25 +322,25 @@ def main():
     if(args.dilates < 0):
         log.error('motionOps --dilates cannot be less than 0')
 
-    if(args.preview):
-        pass
-    elif(args.export_to_premiere):
-        log.conwrite('Exporting to Adobe Premiere Pro XML file.')
-    elif(args.export_to_final_cut_pro):
-        log.conwrite('Exporting to Final Cut Pro XML file.')
-    elif(args.export_to_resolve):
-        log.conwrite('Exporting to DaVinci Resolve XML file.')
-    elif(args.export_to_shotcut):
-        log.conwrite('Exporting to Shotcut XML Timeline file.')
-    elif(args.export_as_audio):
-        log.conwrite('Exporting as audio.')
-    else:
-        log.conwrite('Starting.')
+    def write_starting_message(args):
+        if(args.export_to_premiere):
+            return 'Exporting to Adobe Premiere Pro XML file.'
+        if(args.export_to_final_cut_pro):
+            return 'Exporting to Final Cut Pro XML file.'
+        if(args.export_to_resolve):
+            return 'Exporting to DaVinci Resolve XML file.'
+        if(args.export_to_shotcut):
+            return 'Exporting to Shotcut XML Timeline file.'
+        if(args.export_as_audio):
+            return 'Exporting as audio.'
+        return 'Starting.'
+
+    if(not args.preview):
+        log.conwrite(write_starting_message(args))
 
     if(args.preview or args.export_as_clip_sequence or making_data_file):
         args.no_open = True
 
-    args.background = usefulFunctions.hex_to_bgr(args.background, log)
     if(args.blur < 0):
         args.blur = 0
 
@@ -392,45 +353,28 @@ def main():
     if(args.output_file is None):
         args.output_file = []
 
-    from auto_editor.validateInput import validInput
-    inputList = validInput(args.input, ffmpeg, args, log)
+    from auto_editor.validate_input import valid_input
+    input_list, segments = valid_input(args.input, ffmpeg, args, log)
 
-    def set_output_name(path, args):
-        dot_index = path.rfind('.')
-
-        if(dot_index == -1):
-            root = path
-        else:
-            root = path[:dot_index]
-
-        if(args.export_as_json):
-            return root + '.json'
-        if(args.export_to_final_cut_pro):
-            return root + '.fcpxml'
-        if(args.export_to_shotcut):
-            return root + '.mlt'
-        if(making_data_file):
-            return root + '.xml'
-        if(args.export_as_audio):
-            return root + '_ALTERED.wav'
-
-        ext = path[dot_index:]
-        return root + '_ALTERED' + ext
-
-    if(len(args.output_file) < len(inputList)):
-        for i in range(len(inputList) - len(args.output_file)):
-            args.output_file.append(set_output_name(inputList[i], args))
+    if(len(args.output_file) < len(input_list)):
+        for i in range(len(input_list) - len(args.output_file)):
+            args.output_file.append(set_output_name(input_list[i], None,
+                making_data_file, args))
 
     if(args.combine_files):
-        temp_file = os.path.join(TEMP, 'combined.mp4')
+        if(exporting_to_editor):
+            temp_file = 'combined.mp4'
+        else:
+            temp_file = os.path.join(TEMP, 'combined.mp4')
+
         cmd = []
-        for fileref in inputList:
+        for fileref in input_list:
             cmd.extend(['-i', fileref])
-        cmd.extend(['-filter_complex', '[0:v]concat=n={}:v=1:a=1'.format(len(inputList)),
+        cmd.extend(['-filter_complex', '[0:v]concat=n={}:v=1:a=1'.format(len(input_list)),
             '-codec:v', 'h264', '-pix_fmt', 'yuv420p', '-strict', '-2', temp_file])
         ffmpeg.run(cmd)
         del cmd
-        inputList = [temp_file]
+        input_list = [temp_file]
 
     speeds = [args.silent_speed, args.video_speed]
     if(args.cut_out != [] and 99999 not in speeds):
@@ -442,307 +386,39 @@ def main():
 
     log.debug('Speeds: {}'.format(speeds))
 
-    audioExtensions = ['.wav', '.mp3', '.m4a', '.aiff', '.flac', '.ogg', '.oga',
-        '.acc', '.nfa', '.mka']
-    sampleRate = None
+    def main_loop(input_list, ffmpeg, args, speeds, segments, log):
+        num_cuts = 0
 
-    from auto_editor.scipy.wavfile import read
+        progress = ProgressBar(args.machine_readable_progress, args.no_progress)
 
-    for i, INPUT_FILE in enumerate(inputList):
+        for i, input_path in enumerate(input_list):
+            inp = ffmpeg.file_info(input_path)
 
-        inp = ffmpeg.file_info(INPUT_FILE)
+            if(len(input_list) > 1):
+                log.conwrite('Working on {}'.format(inp.basename))
 
-        if(len(inputList) > 1):
-            log.conwrite('Working on {}'.format(inp.basename))
+            cuts, output_path = edit_media(i, inp, ffmpeg, args, progress, speeds,
+                segments[i], exporting_to_editor, making_data_file, TEMP, log)
+            num_cuts += cuts
 
-        chunks = None
-        if(inp.ext == '.json'):
-            from auto_editor.formats.make_json import read_json_cutlist
+        if(not args.preview and not making_data_file):
+            timer.stop()
 
-            INPUT_FILE, chunks, speeds = read_json_cutlist(inp.path, auto_editor.version, log)
+        if(not args.preview and making_data_file):
+            # Assume making each cut takes about 30 seconds.
+            time_save = usefulfunctions.human_readable_time(num_cuts * 30)
+            s = 's' if num_cuts != 1 else ''
 
-            inp = ffmpeg.file_info(INPUT_FILE)
+            log.print('Auto-Editor made {} cut{}, which would have taken about {} if '
+                'edited manually.'.format(num_cuts, s, time_save))
 
-            newOutput = set_output_name(inp.path, args)
-        else:
-            newOutput = args.output_file[i]
-            if(not os.path.isdir(inp.path) and '.' not in newOutput):
-                newOutput = set_output_name(newOutput, args)
+        if(not args.no_open):
+            usefulfunctions.open_with_system_default(output_path, log)
 
-        log.debug('Input File: {}'.format(inp.path))
-        log.debug('Output File: {}'.format(newOutput))
-
-        if(os.path.isfile(newOutput) and inp.path != newOutput):
-            log.debug('Removing already existing file: {}'.format(newOutput))
-            os.remove(newOutput)
-
-        if(args.sample_rate is None):
-            sampleRate = inp.audio_streams[0]['samplerate']
-            if(sampleRate is None):
-                sampleRate = '48000'
-        else:
-            sampleRate = str(args.sample_rate)
-        log.debug('Samplerate: {}'.format(sampleRate))
-
-        audioData = None
-        audioFile = inp.ext in audioExtensions
-        if(audioFile):
-            fps = 30 if args.force_fps_to is None else args.force_fps_to
-            tracks = 1
-
-            temp_file = os.path.join(TEMP, 'fastAud.wav')
-
-            cmd = ['-i', inp.path]
-            if(not fNone(args.audio_bitrate)):
-                cmd.extend(['-b:a', args.audio_bitrate])
-            cmd.extend(['-ac', '2', '-ar', sampleRate, '-vn', temp_file])
-            ffmpeg.run(cmd)
-
-            sampleRate, audioData = read(temp_file)
-        else:
-            if(args.force_fps_to is not None):
-                fps = args.force_fps_to
-            else:
-                fps = float(inp.fps)
-                if(exporting_to_editor):
-                    fps = int(fps)
-
-            if(fps < 1):
-                log.error('{}: Frame rate cannot be below 1. fps: {}'.format(
-                    inp.basename, fps))
-
-            tracks = len(inp.audio_streams)
-
-            if(args.cut_by_this_track >= tracks):
-                message = "You choose a track that doesn't exist.\nThere "
-                if(tracks == 1):
-                    message += 'is only {} track.\n'.format(tracks)
-                else:
-                    message += 'are only {} tracks.\n'.format(tracks)
-                for t in range(tracks):
-                    message += ' Track {}\n'.format(t)
-                log.error(message)
-
-            def NumberOfVrfFrames(text, log):
-                import re
-                search = re.search(r'VFR:[\d.]+ \(\d+\/\d+\)', text, re.M)
-                if(search is None):
-                    log.warning('Could not get number of VFR Frames.')
-                    return 0
-                else:
-                    nums = re.search(r'\d+\/\d+', search.group()).group(0)
-                    log.debug(nums)
-                    return int(nums.split('/')[0])
-
-            def hasVFR(cmd, log):
-                return NumberOfVrfFrames(ffmpeg.pipe(cmd), log) != 0
-
-            # Split audio tracks into: 0.wav, 1.wav, etc.
-            cmd = ['-i', inp.path, '-hide_banner']
-            for t in range(tracks):
-                cmd.extend(['-map', '0:a:{}'.format(t)])
-                if(not fNone(args.audio_bitrate)):
-                    cmd.extend(['-ab', args.audio_bitrate])
-                cmd.extend(['-ac', '2', '-ar', sampleRate,
-                    os.path.join(TEMP, '{}.wav'.format(t))])
-            cmd.extend(['-map', '0:v:0', '-vf', 'vfrdet', '-f', 'null', '-'])
-            has_vfr = hasVFR(cmd, log)
-            del cmd
-
-            if(args.cut_by_all_tracks):
-                temp_file = os.path.join(TEMP, 'combined.wav')
-                cmd = ['-i', inp.path, '-filter_complex',
-                    '[0:a]amix=inputs={}:duration=longest'.format(tracks), '-ar',
-                    sampleRate, '-ac', '2', '-f', 'wav', temp_file]
-                ffmpeg.run(cmd)
-                del cmd
-            else:
-                temp_file = os.path.join(TEMP, '{}.wav'.format(args.cut_by_this_track))
-
-            sampleRate, audioData = read(temp_file)
-
-        log.debug('Frame Rate: {}'.format(fps))
-        if(chunks is None):
-            from auto_editor.cutting import audioToHasLoud, motionDetection
-            from auto_editor.cutting import combineArrs, applySpacingRules
-
-            audioList = None
-            motionList = None
-            if('audio' in args.edit_based_on):
-                log.debug('Analyzing audio volume.')
-                audioList = audioToHasLoud(audioData, sampleRate,
-                    args.silent_threshold,  fps, log)
-
-            if('motion' in args.edit_based_on):
-                log.debug('Analyzing video motion.')
-                motionList = motionDetection(inp, args.motion_threshold, log,
-                    width=args.width, dilates=args.dilates, blur=args.blur)
-
-                if(audioList is not None):
-                    if(len(audioList) != len(motionList)):
-                        log.debug('audioList Length:  {}'.format(len(audioList)))
-                        log.debug('motionList Length: {}'.format(len(motionList)))
-                    if(len(audioList) > len(motionList)):
-                        log.debug('Reducing the size of audioList to match motionList.')
-                        audioList = audioList[:len(motionList)]
-                    elif(len(motionList) > len(audioList)):
-                        log.debug('Reducing the size of motionList to match audioList.')
-                        motionList = motionList[:len(audioList)]
-
-            hasLoud = combineArrs(audioList, motionList, args.edit_based_on, log)
-            del audioList, motionList
-
-            effects = []
-            if(args.zoom != []):
-                from auto_editor.cutting import applyZooms
-                effects += applyZooms(args.zoom, audioData, sampleRate, fps, log)
-            if(args.rectangle != []):
-                from auto_editor.cutting import applyRects
-                effects += applyRects(args.rectangle, audioData, sampleRate, fps, log)
-
-            chunks = applySpacingRules(hasLoud, speeds, fps, args, log)
-            del hasLoud
-
-        def isClip(chunk):
-            return speeds[chunk[2]] != 99999
-
-        def getNumberOfCuts(chunks, speeds):
-            return len(list(filter(isClip, chunks)))
-
-        def getClips(chunks, speeds):
-            clips = []
-            for chunk in chunks:
-                if(isClip(chunk)):
-                    clips.append([chunk[0], chunk[1], speeds[chunk[2]] * 100])
-            return clips
-
-        num_cuts = getNumberOfCuts(chunks, speeds)
-        clips = getClips(chunks, speeds)
-
-        if(args.export_as_json):
-            from auto_editor.formats.make_json import make_json_cutlist
-            make_json_cutlist(inp.path, newOutput, auto_editor.version, chunks, speeds, log)
-            continue
-
-        if(args.preview):
-            newOutput = None
-            from auto_editor.preview import preview
-            preview(inp, chunks, speeds, log)
-            continue
-
-        if(args.export_to_premiere or args.export_to_resolve):
-            from auto_editor.formats.premiere import premiere_xml
-            premiere_xml(inp, TEMP, newOutput, clips, chunks, sampleRate, audioFile,
-                args.export_to_resolve, fps, log)
-            continue
-
-        if(args.export_to_final_cut_pro):
-            from auto_editor.formats.final_cut_pro import fcp_xml
-
-            totalFrames = chunks[len(chunks) - 1][1]
-            fcp_xml(inp, TEMP, newOutput, clips, chunks, tracks, totalFrames,
-                sampleRate, audioFile, fps, log)
-            continue
-
-        if(args.export_to_shotcut):
-            from auto_editor.formats.shotcut import shotcut_xml
-
-            shotcut_xml(inp, TEMP, newOutput, clips, chunks, fps, log)
-            continue
-
-        def makeAudioFile(inp, chunks, output):
-            from auto_editor.fastAudio import fastAudio, handleAudio, convertAudio
-            theFile = handleAudio(ffmpeg, inp.path, args.audio_bitrate, str(sampleRate),
-                TEMP, log)
-
-            temp_file = os.path.join(TEMP, 'convert.wav')
-            fastAudio(theFile, temp_file, chunks, speeds, log, fps,
-                args.machine_readable_progress, args.no_progress)
-            convertAudio(ffmpeg, temp_file, inp, output, args.audio_codec, log)
-
-        if(audioFile):
-            if(args.export_as_clip_sequence):
-                i = 1
-                for item in chunks:
-                    if(speeds[item[2]] == 99999):
-                        continue
-                    makeAudioFile(inp, [item], appendFileName(newOutput, '-{}'.format(i)))
-                    i += 1
-            else:
-                makeAudioFile(inp, chunks, newOutput)
-            continue
-
-        def makeVideoFile(inp, chunks, output):
-            from auto_editor.videoUtils import handleAudioTracks, muxVideo
-            continueVid = handleAudioTracks(ffmpeg, output, args, tracks, chunks,
-                speeds, fps, TEMP, log)
-            if(continueVid):
-                if(args.render == 'auto'):
-                    if(args.zoom != [] or args.rectangle != []):
-                        args.render = 'opencv'
-                    else:
-                        try:
-                            import av
-                            args.render = 'av'
-                        except ImportError:
-                            args.render = 'opencv'
-
-                log.debug('Using {} method'.format(args.render))
-                if(args.render == 'av'):
-                    if(args.zoom != []):
-                        log.error('Zoom effect is not supported on the '\
-                            'av render method.')
-
-                    if(args.rectangle != []):
-                        log.error('Rectangle effect is not supported on the '\
-                            'av render method.')
-
-                    from auto_editor.renderVideo import renderAv
-                    renderAv(ffmpeg, inp, args, chunks, speeds, fps, has_vfr, TEMP, log)
-
-                if(args.render == 'opencv'):
-                    from auto_editor.renderVideo import renderOpencv
-                    renderOpencv(ffmpeg, inp, args, chunks, speeds, fps, has_vfr,
-                        effects, TEMP, log)
-
-                if(log.is_debug):
-                    log.debug('Writing the output file.')
-                else:
-                    log.conwrite('Writing the output file.')
-
-                # Now mix new audio(s) and the new video.
-                muxVideo(ffmpeg, output, args, tracks, TEMP, log)
-                if(output is not None and not os.path.isfile(output)):
-                    log.bug('The file {} was not created.'.format(output))
-
-        if(args.export_as_clip_sequence):
-            i = 1
-            totalFrames = chunks[len(chunks) - 1][1]
-            speeds.append(99999) # guarantee we have a cut speed to work with.
-            for chunk in chunks:
-                if(speeds[chunk[2]] == 99999):
-                    continue
-
-                makeVideoFile(inp, padChunk(chunk, totalFrames),
-                    appendFileName(newOutput, '-{}'.format(i)))
-                i += 1
-        else:
-            makeVideoFile(inp, chunks, newOutput)
-
-    if(not args.preview and not making_data_file):
-        timer.stop()
-
-    if(not args.preview and making_data_file):
-        # Assume making each cut takes about 30 seconds.
-        time_save = usefulFunctions.humanReadableTime(num_cuts * 30)
-        s = 's' if num_cuts != 1 else ''
-
-        log.print('Auto-Editor made {} cut{}, which would have taken about {} if '\
-            'edited manually.'.format(num_cuts, s, time_save))
-
-    if(not args.no_open):
-        usefulFunctions.openWithSystemDefault(newOutput, log)
-
+    try:
+        main_loop(input_list, ffmpeg, args, speeds, segments, log)
+    except KeyboardInterrupt:
+        log.error('Keyboard Interrupt')
     log.cleanup()
 
 if(__name__ == '__main__'):

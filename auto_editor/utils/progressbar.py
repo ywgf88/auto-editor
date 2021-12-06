@@ -4,9 +4,10 @@ from time import time, localtime
 from platform import system
 from shutil import get_terminal_size
 
-from auto_editor.usefulFunctions import pipeToConsole
+from .func import get_stdout
 
-def _pretty_time(my_time: float, ampm: bool) -> str:
+def _pretty_time(my_time, ampm):
+    # type: (float, bool) -> str
     new_time = localtime(my_time)
 
     hours = new_time.tm_hour
@@ -21,42 +22,19 @@ def _pretty_time(my_time: float, ampm: bool) -> str:
         return '{:02}:{:02} {}'.format(hours, minutes, ampm)
     return '{:02}:{:02}'.format(hours, minutes)
 
-def bar(termsize, title, done, togo, percent, new_time):
+def bar(columns, title, done, togo, percent, new_time):
     bar = '  ⏳{}: [{}{}] {}% done ETA {}'.format(title, done, togo, percent, new_time)
-    if(len(bar) > termsize - 2):
-        bar = bar[:termsize - 2]
+    if(len(bar) > columns - 2):
+        bar = bar[:columns - 2]
     else:
-        bar += ' ' * (termsize - len(bar) - 4)
-    print(bar, end='\r', flush=True)
+        bar += ' ' * (columns - len(bar) - 4)
+    try:
+        print(bar, end='\r', flush=True)
+    except TypeError:
+        print(bar, end='\r')
 
 
 class ProgressBar():
-    def __init__(self, total, title='Please wait', machineReadable=False, hide=False):
-
-        self.total = total
-        self.beginTime = time()
-        self.title = title
-        self.len_title = len(title)
-        self.machine = machineReadable
-        self.hide = hide
-        self.ampm = True
-
-        if(system() == 'Darwin' and not self.machine):
-            try:
-                dateFormat = pipeToConsole(['defaults', 'read',
-                    'com.apple.menuextra.clock', 'DateFormat'])
-                self.ampm = 'a' in dateFormat
-            except FileNotFoundError:
-                pass
-
-        self.allow_unicode = True
-        try:
-            self.tick(0)
-        except UnicodeEncodeError:
-            newTime = _pretty_time(self.beginTime, self.ampm)
-            print('   0% done ETA {}'.format(newTime))
-            self.allow_unicode = False
-
     def tick(self, index):
 
         if(self.hide):
@@ -66,24 +44,58 @@ class ProgressBar():
         if(percentDone == 0): # Prevent dividing by zero.
             percentPerSec = 0
         else:
-            percentPerSec = (time() - self.beginTime) / percentDone
+            percentPerSec = (time() - self.begin_time) / percentDone
 
-        new_time = _pretty_time(self.beginTime + (percentPerSec * 100), self.ampm)
+        new_time = _pretty_time(self.begin_time + (percentPerSec * 100), self.ampm)
 
         if(self.machine):
             index = min(index, self.total)
-            raw = int(self.beginTime + (percentPerSec * 100))
+            raw = int(self.begin_time + (percentPerSec * 100))
             print('{}~{}~{}~{}~{}'.format(
-                self.title, index, self.total, self.beginTime, raw),
+                self.title, index, self.total, self.begin_time, raw),
                 end='\r', flush=True)
             return
 
-        termsize = get_terminal_size().columns
+        columns = get_terminal_size().columns
 
         if(self.allow_unicode):
-            bar_len = max(1, termsize - (self.len_title + 50))
+            bar_len = max(1, columns - (self.len_title + 50))
             done = round(percentDone / (100 / bar_len))
             togo = '░' * int(bar_len - done)
-            bar(termsize, self.title, '█' * done, togo, percentDone, new_time)
+            bar(columns, self.title, '█' * done, togo, percentDone, new_time)
         else:
             print('   {}% done ETA {}'.format(percentDone, new_time))
+
+    def start(self, total, title='Please wait'):
+        self.title = title
+        self.len_title = len(title)
+        self.total = total
+        self.begin_time = time()
+
+        if(self.allow_unicode is None):
+            self.allow_unicode = True
+            try:
+                self.tick(0)
+            except UnicodeEncodeError:
+                self.allow_unicode = False
+                self.tick(0)
+        else:
+            self.tick(0)
+
+    @staticmethod
+    def end():
+        print(' ' * max(1, get_terminal_size().columns - 2), end='\r')
+
+    def __init__(self, machine_readable=False, hide=False):
+        self.machine = machine_readable
+        self.hide = hide
+        self.allow_unicode = None
+
+        self.ampm = True
+        if(system() == 'Darwin' and not self.machine):
+            try:
+                date_format = get_stdout(['defaults', 'read',
+                    'com.apple.menuextra.clock', 'DateFormat'])
+                self.ampm = 'a' in date_format
+            except FileNotFoundError:
+                pass

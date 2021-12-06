@@ -1,5 +1,9 @@
 '''subcommands/create.py'''
 
+import os
+import sys
+import time
+
 def create_options(parser):
     parser.add_argument('--frame_rate', '-fps', '-r', type=float, default=30.0,
         help='set the framerate for the output video.')
@@ -11,26 +15,22 @@ def create_options(parser):
         help='set the pixel height of the video.')
     parser.add_argument('--output_file', '--output', '-o', type=str,
         default='testsrc.mp4')
+    parser.add_argument('--ffmpeg_location', default=None,
+        help='point to your custom ffmpeg file.')
     parser.add_argument('--my_ffmpeg', action='store_true',
-        help='use your ffmpeg and other binaries instead of the ones packaged.')
+        help='use the ffmpeg on your PATH instead of the one packaged.')
     parser.add_argument('--help', '-h', action='store_true',
         help='print info about the program or an option and exit.')
     parser.add_argument('(input)', nargs='*',
         help='the template')
     return parser
 
-def create(sys_args=None):
-    import os
-    import sys
-    import time
-
+def main(sys_args=sys.argv[1:]):
     import auto_editor
     import auto_editor.vanparse as vanparse
 
     from auto_editor.utils.log import Log
     from auto_editor.ffwrapper import FFmpeg
-
-    dir_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
     parser = vanparse.ArgumentParser('create', auto_editor.version,
         description='Generate simple media.')
@@ -39,7 +39,7 @@ def create(sys_args=None):
     log = Log()
     args = parser.parse_args(sys.argv[2:], Log(), 'create')
 
-    ffmpeg = FFmpeg(dir_path, args.my_ffmpeg, False, log)
+    ffmpeg = FFmpeg(args.ffmpeg_location, args.my_ffmpeg, debug=False)
 
     theme = args.input
     output = args.output_file
@@ -85,4 +85,4 @@ def create(sys_args=None):
             args.width, args.height, fps, theme), '-t', str(args.duration), output])
 
 if(__name__ == '__main__'):
-    create()
+    main()
